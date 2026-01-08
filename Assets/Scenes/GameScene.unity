@@ -2126,6 +2126,10 @@ PrefabInstance:
       propertyPath: m_IsActive
       value: 0
       objectReference: {fileID: 0}
+    - target: {fileID: 5254081332595353983, guid: eedb640ced3018c479309aebced56555, type: 3}
+      propertyPath: m_AnchoredPosition.x
+      value: 50.19995
+      objectReference: {fileID: 0}
     - target: {fileID: 6581092853587012114, guid: eedb640ced3018c479309aebced56555, type: 3}
       propertyPath: m_AnchorMax.y
       value: 1
@@ -2446,7 +2450,7 @@ GameObject:
   - component: {fileID: 5618927386765664080}
   - component: {fileID: 3534152100234998309}
   m_Layer: 5
-  m_Name: Pause
+  m_Name: PauseMenuPanel
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0

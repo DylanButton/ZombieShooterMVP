@@ -5,6 +5,12 @@ using System.Collections;
 
 public class Gun : MonoBehaviour
 {
+    [Header("Weapon Manager Reference")]
+    [SerializeField] private WeaponManager weaponManager;
+    
+    [Header("Reload System")]
+    private ReloadSystem reloadSystem;
+    
     [Header("Input")]
     [SerializeField] private InputActionReference shootAction;
     [SerializeField] private InputActionReference lookAction;
@@ -19,6 +25,7 @@ public class Gun : MonoBehaviour
     [SerializeField] private AudioSource gunAudioSource;
     [SerializeField] private AudioClip hammerCockSound;
     [SerializeField] private AudioClip shootSound;
+    [SerializeField] private AudioClip emptyClickSound;
     
     [Header("Timing")]
     [SerializeField] private float shootSoundDelay = 0.2f;
@@ -46,12 +53,11 @@ public class Gun : MonoBehaviour
     private Quaternion initialSwayRotation;
     
     [Header("Debug")]
-    [SerializeField] private bool showDebugLine = true; // NEW: Toggle for debug line
+    [SerializeField] private bool showDebugLine = true;
     
     // Cached references
     private Camera playerCamera;
     private CharacterController characterController;
-    private RaycastHit[] raycastHits = new RaycastHit[1];
     
     // State
     private Coroutine currentShotRoutine;
@@ -61,6 +67,13 @@ public class Gun : MonoBehaviour
     // Input
     private bool shootPressed = false;
     private bool shootTriggered = false;
+    
+    // Track if we're enabled (for reload handling)
+    private bool isEnabled = true;
+    
+    // Dry fire tracking
+    private float lastDryFireTime;
+    private float dryFireCooldown = 0.3f; // Prevent spam
 
     void Start()
     {
@@ -74,22 +87,32 @@ public class Gun : MonoBehaviour
         initialSwayRotation = transform.localRotation;
         characterController = GetComponentInParent<CharacterController>();
         
+        // Get ReloadSystem
+        reloadSystem = GetComponent<ReloadSystem>();
+        
+        // Get weapon slot index from parent
+        if (weaponManager == null)
+        {
+            weaponManager = GetComponentInParent<WeaponManager>();
+            if (weaponManager == null)
+            {
+                weaponManager = FindAnyObjectByType<WeaponManager>();
+            }
+        }
+        
         // Setup input actions
         if (shootAction != null)
         {
             shootAction.action.Enable();
         }
         
-        if (lookAction != null)
-        {
-            lookAction.action.Enable();
-        }
-        
-        Debug.Log($"Gun initialized. Player Camera: {playerCamera != null}, Target Layers: {targetLayers.value}");
+        Debug.Log($"Gun initialized. Player Camera: {playerCamera != null}, ReloadSystem: {reloadSystem != null}");
     }
 
     void Update()
     {
+        if (!isEnabled) return;
+        
         float deltaTime = Time.deltaTime;
         
         if (currentCooldown > 0)
@@ -108,7 +131,7 @@ public class Gun : MonoBehaviour
             // Single fire - trigger on button press
             if (shootTriggered)
             {
-                StartShootingProcess();
+                TryShoot();
                 shootTriggered = false; // Reset after processing
             }
         }
@@ -117,51 +140,85 @@ public class Gun : MonoBehaviour
             // Automatic fire - while button is held
             if (shootPressed && currentCooldown <= 0)
             {
-                StartShootingProcess();
+                TryShoot();
             }
         }
     }
     
-    void HandleInput()
+    bool CanShoot()
     {
-        // Get look input (mouse delta)
-        if (lookAction != null)
+        if (!isEnabled) return false;
+        
+        // Check cooldown
+        if (currentCooldown > 0) return false;
+        
+        // Check if in shooting sequence
+        if (isInShootingSequence) return false;
+        
+        // Check ReloadSystem if available
+        if (reloadSystem != null)
         {
-            mouseLook = lookAction.action.ReadValue<Vector2>();
+            return reloadSystem.CanShoot();
         }
         
-        // Get shoot input
-        if (shootAction != null)
+        // Fallback - always can shoot if no reload system
+        return true;
+    }
+    
+    bool IsGunEmpty()
+    {
+        // Check if gun is completely empty (no ammo in magazine or reserve)
+        if (reloadSystem != null)
         {
-            // Check for button press (for single fire)
-            if (shootAction.action.triggered && !shootTriggered)
-            {
-                shootTriggered = true;
-            }
+            // Check if magazine is empty and there's no reserve ammo
+            bool magazineEmpty = reloadSystem.CurrentAmmoInMagazine <= 0;
+            bool noReserveAmmo = reloadSystem.CurrentReserveAmmo <= 0 && !reloadSystem.HasInfiniteAmmo();
+            bool notReloading = !reloadSystem.IsReloading;
             
-            // Check for button hold (for automatic fire)
-            shootPressed = shootAction.action.IsPressed();
+            return magazineEmpty && noReserveAmmo && notReloading;
+        }
+        
+        return false; // If no reload system, gun is never "empty"
+    }
+    
+    void PlayDryFireSound()
+    {
+        // Prevent spamming dry fire sound
+        if (Time.time - lastDryFireTime < dryFireCooldown) return;
+        
+        lastDryFireTime = Time.time;
+        
+        if (emptyClickSound != null && gunAudioSource != null)
+        {
+            gunAudioSource.PlayOneShot(emptyClickSound);
+            Debug.Log("Dry fire - gun is empty!");
         }
     }
     
-    void ApplyWeaponSway(float deltaTime)
+    void TryShoot()
     {
-        float swayX = -mouseLook.x * swayAmount;
-        float swayY = -mouseLook.y * swayAmount;
+        if (!isEnabled || Time.timeScale == 0) return;
         
-        Vector3 targetPosition = initialSwayPosition + new Vector3(swayX, swayY, 0);
-        Quaternion targetRotation = initialSwayRotation * 
-            Quaternion.Euler(-swayY * 2, swayX * 2, swayX * 3);
-        
-        float smooth = deltaTime * swaySmoothness;
-        transform.localPosition = Vector3.Lerp(transform.localPosition, targetPosition, smooth);
-        transform.localRotation = Quaternion.Slerp(transform.localRotation, targetRotation, smooth);
-    }
-    
-    void StartShootingProcess()
-    {
-        if (isInShootingSequence || currentCooldown > 0 || Time.timeScale == 0)
+        // Check if gun is completely empty (no ammo to shoot or reload)
+        if (IsGunEmpty())
+        {
+            PlayDryFireSound();
             return;
+        }
+        
+        // Check if we can shoot (cooldown, not reloading, etc.)
+        if (!CanShoot()) return;
+            
+        // Check ammo via ReloadSystem
+        if (reloadSystem != null)
+        {
+            if (!reloadSystem.ConsumeAmmo(1))
+            {
+                // Out of ammo but might have reserve - play empty click
+                PlayDryFireSound();
+                return;
+            }
+        }
             
         currentCooldown = fireCooldown;
         isInShootingSequence = true;
@@ -207,33 +264,67 @@ public class Gun : MonoBehaviour
         isInShootingSequence = false;
     }
     
+    void HandleInput()
+    {
+        // Get look input (mouse delta) - always read even when disabled
+        if (lookAction != null)
+        {
+            mouseLook = lookAction.action.ReadValue<Vector2>();
+        }
+        
+        // Get shoot input - only process if enabled
+        if (shootAction != null && isEnabled)
+        {
+            // Check for button press (for single fire)
+            if (shootAction.action.triggered && !shootTriggered)
+            {
+                shootTriggered = true;
+            }
+            
+            // Check for button hold (for automatic fire)
+            shootPressed = shootAction.action.IsPressed();
+        }
+    }
+    
+    void ApplyWeaponSway(float deltaTime)
+    {
+        if (!isEnabled) return;
+        
+        float swayX = -mouseLook.x * swayAmount;
+        float swayY = -mouseLook.y * swayAmount;
+        
+        Vector3 targetPosition = initialSwayPosition + new Vector3(swayX, swayY, 0);
+        Quaternion targetRotation = initialSwayRotation * 
+            Quaternion.Euler(-swayY * 2, swayX * 2, swayX * 3);
+        
+        float smooth = deltaTime * swaySmoothness;
+        transform.localPosition = Vector3.Lerp(transform.localPosition, targetPosition, smooth);
+        transform.localRotation = Quaternion.Slerp(transform.localRotation, targetRotation, smooth);
+    }
+    
     public void FireBullet()
     {
         if (playerCamera == null)
         {
             Debug.LogWarning("Player camera is null!");
-            playerCamera = Camera.main; // Try to get it again
+            playerCamera = Camera.main;
             if (playerCamera == null)
                 return;
         }
         
-        // Shoot from camera center (simplest FPS hit-scan)
+        // Shoot from camera center
         Ray gunRay = playerCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
         
         // Show debug line if enabled
         if (showDebugLine)
         {
             Debug.DrawRay(gunRay.origin, gunRay.direction * bulletRange, Color.red, 2f);
-            Debug.Log($"Shooting from: {gunRay.origin}, Direction: {gunRay.direction}");
         }
         
-        // Use simple Raycast (easier to debug)
+        // Use simple Raycast
         RaycastHit hit;
         if (Physics.Raycast(gunRay, out hit, bulletRange, targetLayers))
         {
-            GameObject hitObject = hit.collider.gameObject;
-            Debug.Log($"Hit: {hitObject.name} at distance: {hit.distance:F2}m");
-            
             // Hit effect
             if (hitEffectPrefab != null)
             {
@@ -246,36 +337,21 @@ public class Gun : MonoBehaviour
             ZombieHealth zombieHealth = hit.collider.GetComponent<ZombieHealth>();
             if (zombieHealth == null)
             {
-                // Try parent
                 zombieHealth = hit.collider.GetComponentInParent<ZombieHealth>();
             }
             
             if (zombieHealth != null)
             {
                 zombieHealth.TakeDamage(damage);
-                Debug.Log($"SUCCESS: Hit zombie '{hitObject.name}' for {damage} damage!");
             }
             else
             {
-                Debug.Log($"Hit object '{hitObject.name}' but no ZombieHealth component found");
-                
                 // Check for PlayerHealth (friendly fire)
                 PlayerHealth playerHealth = hit.collider.GetComponent<PlayerHealth>();
                 if (playerHealth != null)
                 {
                     playerHealth.TakeDamage(damage);
-                    Debug.Log($"Hit player for {damage} damage!");
                 }
-            }
-        }
-        else
-        {
-            Debug.Log("No target hit - raycast didn't hit anything");
-            
-            // Draw debug line in scene view to see where it went
-            if (showDebugLine)
-            {
-                Debug.DrawLine(gunRay.origin, gunRay.origin + gunRay.direction * bulletRange, Color.yellow, 2f);
             }
         }
     }
@@ -302,22 +378,20 @@ public class Gun : MonoBehaviour
     
     void OnEnable()
     {
-        // Enable input actions when script is enabled
+        isEnabled = true;
+        
+        // Enable shoot action when script is enabled
         if (shootAction != null)
             shootAction.action.Enable();
-        
-        if (lookAction != null)
-            lookAction.action.Enable();
     }
     
     void OnDisable()
     {
-        // Disable input actions when script is disabled
+        isEnabled = false;
+        
+        // Only disable shoot action, NOT look action
         if (shootAction != null)
             shootAction.action.Disable();
-        
-        if (lookAction != null)
-            lookAction.action.Disable();
         
         // Stop any running coroutines
         if (currentShotRoutine != null)
