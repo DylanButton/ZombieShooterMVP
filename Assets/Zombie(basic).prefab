@@ -151,11 +151,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::ZombieAI
   isTankZombie: 0
-  normalSpeed: 3.5
-  tankSpeed: 2
+  normalSpeed: 10
+  tankSpeed: 5
   chaseSpeedMultiplier: 1.5
   rotationSpeed: 120
-  detectionRange: 20
+  detectionRange: 50
   attackRange: 2
   playerLayer:
     serializedVersion: 2
